@@ -124,6 +124,10 @@ def smart_permute_list(items_list):
     return permuted_list, ordering
 
 
+def current_time():
+    return int(round(time.time()))
+
+
 class Clockchain(object):
     def __init__(self):
         self.chain = []
@@ -249,7 +253,7 @@ class Clockchain(object):
 
         # Check hash
         if hash(item_copy)[-difficulty:] != "0" * difficulty:
-            logger.debug("Invalid hash for item: " + item_copy + " " + hash(item_copy))
+            logger.debug("Invalid hash for item: " + str(item_copy) + " " + hash(item_copy))
             return False
 
         # Adding current collect reference, signature will only match if our own and peers collect references match
@@ -284,6 +288,8 @@ class Clockchain(object):
                 logger.debug("Invalid ping for collect")
                 return False
 
+        # TODO: Check timestampdiff larger than X min
+
         # Check that score is high enough
         score = evaluate_collection_hashes(self.current_chainhash(), collect['list'])
         if score <= config['score_limit']:
@@ -300,6 +306,8 @@ class Clockchain(object):
         if check_in_pool:
             if pubkey_to_addr(ping['pubkey']) in self.pingpool:
                 return False
+
+        # TODO: Sanity check timestamp?
 
         # Check hash and signature, keeping in mind signature might be popped off
         if not self.validate_sig_hash(ping):
@@ -363,7 +371,8 @@ def ping_worker():
         time.sleep(20)
         if not clockchain.added_ping:
             logger.debug("Havent pinged network for this round! Starting to mine..")
-            ping = {'pubkey': clockchain.pubkey}
+            timestamp = current_time()
+            ping = {'pubkey': clockchain.pubkey, 'timestamp': timestamp}
             _, nonce = mine(ping)
             ping['nonce'] = nonce
 
@@ -383,7 +392,8 @@ def ping_worker():
 
             # Add to pool
             addr = pubkey_to_addr(ping['pubkey'])
-            clockchain.pingpool[addr] = {"nonce": nonce, "signature": signature, "pubkey": clockchain.pubkey}
+            clockchain.pingpool[addr] = {"nonce": nonce, "timestamp": timestamp,
+                                         "signature": signature, "pubkey": clockchain.pubkey}
 
             clockchain.added_ping = True
 

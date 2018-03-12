@@ -18,11 +18,14 @@
 					"nonce" : {
 						"type" : "integer"
 					},
+					"timestamp" : {
+						"type" : "integer"
+					},
 					"signature" : {
 						"type" : "string"
 					}
 				},
-				"required": ["pubkey", "nonce", "signature"]
+				"required": ["pubkey", "nonce", "timestamp", "signature"]
 			},
 			"minItems": 2
 		},
