@@ -7,6 +7,9 @@
 		"nonce" : {
 			"type" : "integer"
 		},
+		"reference" : {
+			"type" : "string"
+		},
 		"timestamp" : {
 			"type" : "integer"
 		},
@@ -14,5 +17,5 @@
 			"type" : "string"
 		}
 	},
-	"required": ["pubkey", "nonce", "timestamp", "signature"]
+	"required": ["pubkey", "nonce", "reference", "timestamp", "signature"]
 }

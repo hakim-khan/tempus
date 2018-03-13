@@ -9,15 +9,13 @@ import requests
 from flask import Flask, jsonify, request
 from jsonschema import validate
 import time
-from random import sample
-from statistics import stdev, mean
-from math import log
 import coloredlogs
 import logging
 import socket
 import copy
 from ecdsa import BadSignatureError
 import os
+import jsonref
 
 from pki import get_kp, pubkey_to_addr, sign, verify
 
@@ -46,13 +44,17 @@ def standard_encode(dictionary):
     return bytes(json.dumps(dictionary, sort_keys=True, separators=(',', ':')), 'utf-8')
 
 
-def validate_schema(dictionary, schema):
-    # Check that the required fields are in the dict
-    with open(schema) as data_file:
-        schema = json.load(data_file)
+def validate_schema(dictionary, schema_file):
+    absolute_path = dir_path + '/schemas/' + schema_file
+
+    base_path = os.path.dirname(absolute_path)
+    base_uri = 'file://{}/'.format(base_path)
+
+    with open(absolute_path) as schema_bytes:
+        schema = jsonref.loads(schema_bytes.read(), base_uri=base_uri, jsonschema=True)
     try:
         validate(dictionary, schema)
-    except BaseException:
+    except Exception as e:
         logger.debug("Invalid/missing values: " + str(sys.exc_info()))
         logger.debug(traceback.format_exc())
         return False
@@ -70,18 +72,6 @@ def hash(content, times=1):
         return hashlib.sha256(encoded).hexdigest()
 
 
-def similar(a, b):
-    total = 0
-    for i in range(64):
-        total += abs(int(a[i], 16)-int(b[i], 16))
-
-    maximum = 15*64
-    fraction = total/maximum
-    similarity = 1-fraction
-
-    return similarity
-
-
 # TODO: Do this in C or other efficient lib..
 def mine(content=None):
     nonce = random.randrange(config['max_randint'])
@@ -92,36 +82,6 @@ def mine(content=None):
             break
         nonce += random.randrange(config['nonce_jump'])
     return hashed, nonce
-
-
-def evaluate_collection_hashes(collection, permuted):
-    if len(permuted) < 2:
-        return 0
-
-    permuted = [hash(ping) for ping in permuted]
-
-    sims = []
-    for idx, curr_hash in enumerate(permuted):
-        similarity = similar(curr_hash, hash(collection, idx))
-        sims.append(similarity)
-
-    avg = mean(sims)
-    spread = stdev(sims)
-
-    # TODO: Find other solution than using log length of list - this incentivizes spam!!
-    # TODO: You put it there temporarily because just avg*spread was higher for smaller lists, which is undesirable
-    score = avg*spread*log(len(permuted))
-    return score
-
-
-def smart_permute_list(items_list):
-    length = len(items_list)
-    indices = [i for i in range(length)]
-
-    # TODO: Permute in clever fashion (box-packing problem?) right now is a random ordering
-    ordering = sample(indices, length)
-    permuted_list = [items_list[i] for i in ordering]
-    return permuted_list, ordering
 
 
 def current_time():
@@ -156,7 +116,7 @@ class Clockchain(object):
 
         logger.debug("This node is " + self.addr)
 
-        # Create genesis collect
+        # Create genesis tick
         # TODO: Re-adapt this to use signatures
         genesis_addr = "tempigFUe1uuRsAQ7WWNpb5r97pDCJ3wp9"
         self.chain.append({'addr': genesis_addr, 'nonce': 27033568337, 'list': []})
@@ -171,23 +131,6 @@ class Clockchain(object):
 
     def current_chainhash(self):
         return hash(self.chain[-1])
-
-    def get_pingpool_hashes_list(self, include_own_ping, ping_dict=None):
-        hashes = []
-        if ping_dict is None:
-            ping_dict = self.pingpool
-
-        # Uses deepcopy otherwise altering the ping_dict itself!
-        ping_dict_copy = copy.deepcopy(ping_dict)
-
-        if not include_own_ping:
-            ping_dict_copy.pop(clockchain.addr, None)
-
-        for k, v in ping_dict_copy.items():
-            v.pop('signature')
-            hashes.append(hash(v))
-
-        return hashes
 
     def register_peer(self, url, peer_addr):
         """
@@ -232,7 +175,7 @@ class Clockchain(object):
                     if origin != self.peers[peer]:  # If origin addr is not target peer addr
                         requests.post(peer + '/forward/' + route + '?addr=' + origin +
                                       "&redistribute=" + str(redistribute+1), json=data_dict, timeout=config['timeout'])
-                except BaseException:
+                except Exception as e:
                     logger.debug(str(sys.exc_info()))
                     pass
 
@@ -240,13 +183,14 @@ class Clockchain(object):
         netloc = urlparse(url).netloc
         del self.peers[netloc]
 
-    def restart_collect(self):
+    def restart_tick(self):
         self.added_ping = False
         self.pingpool = {}
 
     def validate_sig_hash(self, item):
         item_copy = copy.deepcopy(item)
         signature = item_copy.pop('signature', None)
+
         if signature is None:
             logger.debug("Could not find signature in validate sighash..")
             return False
@@ -256,50 +200,41 @@ class Clockchain(object):
             logger.debug("Invalid hash for item: " + str(item_copy) + " " + hash(item_copy))
             return False
 
-        # Adding current collect reference, signature will only match if our own and peers collect references match
-        # TODO: Figure out if this messes with consensus mechanism, or enhances it
-        item_copy['current_collect_ref'] = self.current_chainhash()
-
         # Validate signature
         try:
             if not verify(standard_encode(item_copy), signature, item_copy['pubkey']):
                 return False
         except BadSignatureError:
             # TODO : When new joiner joins, make sure seeds/new friends relate the latest hash to them..
-            print("Mismatch in signature validation, possibly due to chain split / simultaneous solutions found")
+            print("Bad signature!" + str(item_copy) + " " + str(signature))
             return False
 
         return True
 
-    def validate_collect(self, collect):
-        if not validate_schema(collect, dir_path + '/schemas/collect_schema.json'):
+    def validate_tick(self, tick):
+        if not validate_schema(tick, 'tick_schema.json'):
             logger.debug("Failed schema validation")
             return False
 
         # Check hash and signature, keeping in mind signature might be popped off
-        if not self.validate_sig_hash(collect):
+        if not self.validate_sig_hash(tick):
             logger.debug("Failed signature and hash checking")
             return False
 
         # Check all pings in list
-        for ping in collect['list']:
+        for ping in tick['list']:
             valid_ping = self.validate_ping(ping, check_in_pool=False)
             if not valid_ping:
-                logger.debug("Invalid ping for collect")
+                logger.debug("Invalid ping for tick")
                 return False
 
         # TODO: Check timestampdiff larger than X min
-
-        # Check that score is high enough
-        score = evaluate_collection_hashes(self.current_chainhash(), collect['list'])
-        if score <= config['score_limit']:
-            logger.debug("Score below score limit:" + str(score))
-            return False
+        # TODO: Check 90% of prev signatures included
 
         return True
 
     def validate_ping(self, ping, check_in_pool=True):
-        if not validate_schema(ping, dir_path + '/schemas/ping_schema.json'):
+        if not validate_schema(ping, 'ping_schema.json'):
             return False
 
         # Check addr already not in dict
@@ -330,7 +265,7 @@ def send_mutual_add_requests(peers, get_further_peers=False):
                 response = requests.post(peer + '/mutual_add', json=content, timeout=config['timeout'])
                 peer_addr = response.text
                 status_code = response.status_code
-            except BaseException:
+            except Exception:
                 logger.debug("no response from peer, did not add: " + str(sys.exc_info()))
                 continue
             if status_code == 201:
@@ -372,16 +307,17 @@ def ping_worker():
         if not clockchain.added_ping:
             logger.debug("Havent pinged network for this round! Starting to mine..")
             timestamp = current_time()
-            ping = {'pubkey': clockchain.pubkey, 'timestamp': timestamp}
+            ping = {'pubkey': clockchain.pubkey,
+                    'timestamp': timestamp,
+                    'reference': clockchain.current_chainhash()
+                    }
+
+            # Always do mining and put nonce after ping construction but before inserting signature
             _, nonce = mine(ping)
             ping['nonce'] = nonce
 
-            # Add and remove current hash to make signature
-            ping['current_collect_ref'] = clockchain.current_chainhash()
             signature = sign(standard_encode(ping), clockchain.privkey)
             ping['signature'] = signature
-
-            ping.pop('current_collect_ref', None)
 
             # Validate own ping
             validation_result = clockchain.validate_ping(ping, check_in_pool=True)
@@ -392,8 +328,7 @@ def ping_worker():
 
             # Add to pool
             addr = pubkey_to_addr(ping['pubkey'])
-            clockchain.pingpool[addr] = {"nonce": nonce, "timestamp": timestamp,
-                                         "signature": signature, "pubkey": clockchain.pubkey}
+            clockchain.pingpool[addr] = ping
 
             clockchain.added_ping = True
 
@@ -402,71 +337,11 @@ def ping_worker():
             logger.debug("Forwarded own ping: " + str(ping))
 
 
-# TODO: When two solutions found by 2 verifiers at the same time, the network splits
-# TODO: Need to design consensus mechanism - splitting network halves the pings??
-
-# TODO: If ping is inserted which makes everyone find a viable solution, everybody floods network with that solution
-# TODO: So need to fix that somehow
-def collect_worker():
+# TODO: Consensus mechanism
+def tick_worker():
     while True:
         if clockchain.added_ping:
-            curr_collect_hash = clockchain.current_chainhash()
-
-            ping_list = list(clockchain.pingpool.values())
-
-            if len(ping_list) == 0:
-                clockchain.restart_collect()
-                logger.error("Got signalled it was found before me.. putting own hash again.. (via len pinglist)")
-                continue
-
-            # set include_own_ping=False because my ping is included already in the collect
-            hashes_list = clockchain.get_pingpool_hashes_list(ping_dict=clockchain.pingpool, include_own_ping=False)
-
-            _, ordering = smart_permute_list(hashes_list)
-
-            permuted_ping_list = [ping_list[i] for i in ordering]
-
-            collect = {'pubkey': clockchain.pubkey, 'list': permuted_ping_list}
-
-            _, candidate_nonce = mine(collect)
-
-            if curr_collect_hash != clockchain.current_chainhash():  # Restart
-                logger.error("Got signalled it was found before me.. putting own hash again.. (via currblock diff)")
-                clockchain.restart_collect()
-                continue
-
-            score = evaluate_collection_hashes(curr_collect_hash, permuted_ping_list)
-
-            if score > config['score_limit']:
-
-                collect['nonce'] = candidate_nonce
-
-                # Add and remove current hash to make signature
-                collect['current_collect_ref'] = clockchain.current_chainhash()
-                collect['signature'] = sign(standard_encode(collect), clockchain.privkey)
-                collect.pop('current_collect_ref', None)
-
-                # Validate own collect
-                validation_result = clockchain.validate_collect(collect)
-                print(collect)
-                if not validation_result:
-                    logger.debug("Failed own collect validation")
-                    continue  # Skip to next iteration of while loop
-
-                logger.debug("Solved collect of size " + str(len(permuted_ping_list)) + ", with contents " + str(collect))
-
-                # Add to own chain and restart ping collecting
-                clockchain.chain.append(collect)
-
-                clockchain.restart_collect()
-
-                # Forward to peers
-                clockchain.forward(collect, 'collect', clockchain.addr)
-                logger.debug("Forwarded own collect: " + str(collect))
-
-            else:
-                logger.warning("Only achieved " + str(score) + " score for " + curr_collect_hash + " using "
-                               + str(len(permuted_ping_list)) + " pings")
+            pass
 
 
 # Instantiate node
@@ -480,31 +355,28 @@ coloredlogs.install(level='DEBUG', logger=logger, fmt='(%(threadName)-10s) %(mes
 clockchain = Clockchain()
 
 
-# TODO: Need to add rogue client which tries to attack the network in as many ways as possible
-# TODO: This is to learn how to make the network more robust and failsafe
-@app.route('/forward/collect', methods=['POST'])
-def forward_collect():
-    collect = request.get_json()
+# TODO: Expand on rogue client
+@app.route('/forward/tick', methods=['POST'])
+def forward_tick():
+    tick = request.get_json()
 
-    if clockchain.check_duplicate(collect):
+    if clockchain.check_duplicate(tick):
         return "duplicate request please wait 10s", 400
 
-    validation_result = clockchain.validate_collect(collect)
+    if not clockchain.validate_tick(tick):
+        return "Invalid tick", 400
 
-    if not validation_result:
-        return "Invalid collect", 400
+    clockchain.chain.append(tick)
 
-    clockchain.chain.append(collect)
-
-    clockchain.restart_collect()
+    clockchain.restart_tick()
 
     # TODO: Sanitize this input..
     redistribute = int(request.args.get('redistribute'))
     if redistribute:
         origin = request.args.get('addr')
-        clockchain.forward(collect, 'collect', origin, redistribute=redistribute)
+        clockchain.forward(tick, 'tick', origin, redistribute=redistribute)
 
-    return "Added collect", 201
+    return "Added tick", 201
 
 
 @app.route('/forward/ping', methods=['POST'])
@@ -513,9 +385,7 @@ def forward_ping():
     if clockchain.check_duplicate(ping):
         return "duplicate request please wait 10s", 400
 
-    validation_result = clockchain.validate_ping(ping, check_in_pool=True)
-
-    if not validation_result:
+    if not clockchain.validate_ping(ping, check_in_pool=True):
         return "Invalid ping", 400
 
     # Add to pool
@@ -523,7 +393,7 @@ def forward_ping():
     clockchain.pingpool[addr] = ping
 
     # TODO: Why would anyone forward others pings? Only incentivized to forward own pings (to get highest uptime)
-    # TODO: Partially solved by the need to have at least as many pings as previous collect
+    # TODO: Would be solved if you remove peers that do not forward your pings
 
     redistribute = int(request.args.get('redistribute'))
     if redistribute:
@@ -540,7 +410,7 @@ def mutual_add():
     values = request.get_json()
 
     # Verify json schema
-    if not validate_schema(values, dir_path + '/schemas/mutual_add_schema.json'):
+    if not validate_schema(values, 'mutual_add_schema.json'):
         return "Invalid request", 400
 
     # Verify that pubkey and signature match
@@ -619,11 +489,11 @@ if __name__ == '__main__':
 
     join_network_thread = threading.Thread(target=join_network_worker)
     ping_thread = threading.Thread(target=ping_worker)
-    collect_thread = threading.Thread(target=collect_worker)
+    tick_thread = threading.Thread(target=tick_worker)
 
     join_network_thread.start()
     ping_thread.start()
-    collect_thread.start()
+    #tick_thread.start()
 
     # Try ports until one succeeds
     while True:
