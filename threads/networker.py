@@ -155,8 +155,7 @@ class Networker(object):
         time.sleep(sleeptime)
 
         # First try to add seeds
-        if self.port < 5003:
-            self.send_mutual_add_requests(config['seeds'])
+        self.send_mutual_add_requests(config['seeds'])
 
         # Then get random sample of peers from them
         peer_samples = self.get_sample_of_peers_from(config['seeds'])
@@ -169,14 +168,15 @@ class Networker(object):
         # Continuously try add new peers until my peerlist is above minimum size
         while True:
             time.sleep(4)  # TODO: Put in config
-            if len(self.peers) < config['min_peers']:
+            if len(self.peers) < 1:
+                logger.debug("no peers! adding seeds again")
+                peer_samples = self.get_sample_of_peers_from(config['seeds'])
+                self.send_mutual_add_requests(peer_samples)
+            elif len(self.peers) < config['min_peers']:
                 logger.debug("peerlist below minimum, trying to add more peers")
                 peer_samples = self.get_sample_of_peers_from(self.peers)
                 self.send_mutual_add_requests(peer_samples)
                 self.ready = False
             else:
                 self.ready = True
-            if len(self.peers) < 1:
-                logger.debug("no peers! adding seeds again")
-                peer_samples = self.get_sample_of_peers_from(config['seeds'])
-                self.send_mutual_add_requests(peer_samples)
+
