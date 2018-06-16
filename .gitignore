@@ -110,3 +110,6 @@ venv.bak/
 # private key
 priv.json
 pvk
+
+# Specific config files
+specific_config.json

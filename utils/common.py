@@ -1,8 +1,12 @@
 import logging
 import json
 import os.path
+from dotenv import find_dotenv, load_dotenv
 from utils.pki import get_kp, pubkey_to_addr
 from logging.handlers import TimedRotatingFileHandler
+
+load_dotenv(find_dotenv(), verbose=True)
+config_file_path = os.getenv("CONFIG_FILE_PATH")
 
 # Load config path
 this_file_path = os.path.dirname(os.path.realpath(__file__))
@@ -11,7 +15,7 @@ this_file_path = os.path.dirname(os.path.realpath(__file__))
 dir_path = os.path.abspath(os.path.join(this_file_path, os.pardir))
 
 # Load config file
-with open(dir_path + '/config.json') as config_file:
+with open(dir_path + '/' + config_file_path) as config_file:
     config = json.load(config_file)
 
 if config['api_backend'] == "flask":

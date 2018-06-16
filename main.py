@@ -56,9 +56,9 @@ if __name__ == '__main__':
 
             networker.activate(port)
             if config['api_backend'] == "flask":
-                app.run(host="127.0.0.1", port=port, threaded=True)  # Flask
+                app.run(host='0.0.0.0', port=port, threaded=True)  # Flask
             else:
-                app.run(host="127.0.0.1", port=port, access_log=False)  # Sanic
+                app.run(host='0.0.0.0', port=port, access_log=False)  # Sanic
             break  # Leave break here so infinite loop stops!
         except socket.error as e:
             port = port+1
