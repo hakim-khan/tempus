@@ -112,4 +112,4 @@ priv.json
 pvk
 
 # Specific config files
-specific_config.json
+/specific_config.json
