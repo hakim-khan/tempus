@@ -60,7 +60,7 @@ if __name__ == '__main__':
             else:
                 app.run(host='0.0.0.0', port=port, access_log=False)  # Sanic
             break  # Leave break here so infinite loop stops!
-        except socket.error as e:
+        except socket.error:
             port = port+1
             pass
         except Exception as e:

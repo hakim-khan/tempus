@@ -124,6 +124,9 @@ def validate_tick(tick, previous_tick=None, possible_previous_ticks=None,
     for ping in tick_copy['list']:
         # TODO: Check if tick's pings are in my own pool?
         # TODO: So they dont just send any random pings
+
+        # TODO: Actually, any node can send any amount of fake pings now with
+        # TODO: any random reference.... make sure you sanity check reference!!
         valid_ping = validate_ping(ping)
         if not valid_ping:
             logger.debug("tick invalid due to containing invalid ping")
